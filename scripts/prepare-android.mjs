@@ -1,11 +1,14 @@
 
-#!/usr/bin/env node
-
 /**
  * Farnava Android Preparation
- * Version: 1.0.0
+ * Version: 1.0.1
+ * Node.js 22+
  *
- * Run from repository root:
+ * Run:
+ * node scripts/prepare-android.mjs
+ *
+ * Required execution order:
+ * npx cap sync android
  * node scripts/prepare-android.mjs
  */
 
@@ -19,8 +22,10 @@ const APP_SRC_MAIN = path.join(APP_DIR, 'src', 'main');
 const APP_RES = path.join(APP_SRC_MAIN, 'res');
 const CUSTOM_RES = path.join(ROOT, 'android-resources', 'res');
 
-function info(message) {
-  console.log(`[Farnava Android] ${message}`);
+const MIN_SDK = 24;
+
+function log(message) {
+  console.log(`[Farnava] ${message}`);
 }
 
 function fail(message) {
@@ -32,83 +37,69 @@ function isFile(file) {
     fs.statSync(file).isFile();
 }
 
-function ensureDir(dir) {
+function ensureDirectory(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-/**
- * Copy custom Android resources.
- */
-function copyResourceTree(sourceDir, destinationDir) {
-  if (!fs.existsSync(sourceDir)) return;
+/* =====================================
+   1. COPY CUSTOM ANDROID RESOURCES
+===================================== */
 
-  ensureDir(destinationDir);
+function copyResources(source, destination) {
+  if (!fs.existsSync(source)) {
+    return;
+  }
+
+  ensureDirectory(destination);
 
   for (const entry of fs.readdirSync(
-    sourceDir,
+    source,
     { withFileTypes: true }
   )) {
-    const source = path.join(sourceDir, entry.name);
-    const destination = path.join(
-      destinationDir,
-      entry.name
-    );
+    const src = path.join(source, entry.name);
+    const dest = path.join(destination, entry.name);
 
     if (entry.isDirectory()) {
-      copyResourceTree(source, destination);
+      copyResources(src, dest);
     } else if (entry.isFile()) {
-      ensureDir(path.dirname(destination));
-      fs.copyFileSync(source, destination);
+      ensureDirectory(path.dirname(dest));
+      fs.copyFileSync(src, dest);
 
-      info(`Copied ${path.relative(ROOT, destination)}`);
+      log(`Resource copied: ${path.relative(ROOT, dest)}`);
     }
   }
 }
 
-/**
- * Set Android minimum SDK to API 24.
- *
- * Required by Cordova Android Framework 14.
- */
-function updateGradleMinSdk(file) {
-  if (!isFile(file)) return false;
+/* =====================================
+   2. FIX MINIMUM ANDROID SDK
+===================================== */
+
+function updateMinSdk(file) {
+  if (!isFile(file)) {
+    return false;
+  }
 
   const original = fs.readFileSync(file, 'utf8');
   let updated = original;
 
-  // variables.gradle:
-  // minSdkVersion = 23
-
-  updated = updated.replace(
+  const replacements = [
     /^([ \t]*minSdkVersion[ \t]*=[ \t]*)\d+([ \t]*(?:\/\/.*)?)$/gm,
-    (_match, prefix, suffix) =>
-      `${prefix}24${suffix}`
-  );
-
-  // build.gradle:
-  // minSdkVersion 23
-
-  updated = updated.replace(
     /^([ \t]*minSdkVersion[ \t]+)\d+([ \t]*(?:\/\/.*)?)$/gm,
-    (_match, prefix, suffix) =>
-      `${prefix}24${suffix}`
-  );
+    /^([ \t]*minSdk[ \t]*=[ \t]*)\d+([ \t]*(?:\/\/.*)?)$/gm
+  ];
 
-  // build.gradle.kts:
-  // minSdk = 23
-
-  updated = updated.replace(
-    /^([ \t]*minSdk[ \t]*=[ \t]*)\d+([ \t]*(?:\/\/.*)?)$/gm,
-    (_match, prefix, suffix) =>
-      `${prefix}24${suffix}`
-  );
+  for (const pattern of replacements) {
+    updated = updated.replace(
+      pattern,
+      (_match, prefix, suffix) =>
+        `${prefix}${MIN_SDK}${suffix}`
+    );
+  }
 
   if (updated !== original) {
     fs.writeFileSync(file, updated, 'utf8');
 
-    info(
-      `Set minSdkVersion to 24 in ${path.relative(ROOT, file)}`
-    );
+    log(`Minimum SDK updated: ${path.relative(ROOT, file)}`);
 
     return true;
   }
@@ -116,41 +107,37 @@ function updateGradleMinSdk(file) {
   return false;
 }
 
-/**
- * Update an explicit uses-sdk declaration if present.
- */
-function updateManifestMinSdk(file) {
-  if (!isFile(file)) return false;
+/* =====================================
+   3. FIX ANDROID MANIFEST
+===================================== */
+
+function updateManifest(file) {
+  if (!isFile(file)) {
+    return;
+  }
 
   const original = fs.readFileSync(file, 'utf8');
 
   const pattern =
-    /(<uses-sdk\b[^>]*\bandroid:minSdkVersion\s*=\s*["'])\d+(["'][^>]*\/?>)/s;
+    /(<uses-sdk\b[^>]*\bandroid:minSdkVersion\s*=\s*["'])\d+(["'][^>]*\/?>)/g;
 
   const updated = original.replace(
     pattern,
     (_match, prefix, suffix) =>
-      `${prefix}24${suffix}`
+      `${prefix}${MIN_SDK}${suffix}`
   );
 
   if (updated !== original) {
     fs.writeFileSync(file, updated, 'utf8');
-
-    info(
-      `Updated manifest minSdkVersion in ${path.relative(ROOT, file)}`
-    );
-
-    return true;
+    log('Android Manifest updated.');
   }
-
-  return false;
 }
 
-/**
- * Remove only the duplicated launcher background color.
- * Keep all other generated Android resources.
- */
-function removeDuplicateLauncherBackground(valuesDir) {
+/* =====================================
+   4. FIX DUPLICATE LAUNCHER COLOR
+===================================== */
+
+function removeDuplicateLauncherColor(valuesDir) {
   const customFile = path.join(
     valuesDir,
     'farnava_colors.xml'
@@ -165,55 +152,43 @@ function removeDuplicateLauncherBackground(valuesDir) {
     return;
   }
 
-  const customXml = fs.readFileSync(
-    customFile,
-    'utf8'
-  );
+  const customXml = fs.readFileSync(customFile, 'utf8');
+  const generatedXml = fs.readFileSync(generatedFile, 'utf8');
 
-  const generatedXml = fs.readFileSync(
-    generatedFile,
-    'utf8'
-  );
+  const name = 'ic_launcher_background';
 
-  const resourceName = 'ic_launcher_background';
-
-  const customDecl = new RegExp(
-    `<color\\b(?=[^>]*\\bname\\s*=\\s*["']${resourceName}["'])[^>]*(?:\\/\\s*>|>[\\s\\S]*?<\\/color\\s*>)`,
+  const makePattern = () => new RegExp(
+    `<color\\b(?=[^>]*\\bname\\s*=\\s*["']${name}["'])[^>]*(?:\\/\\s*>|>[\\s\\S]*?<\\/color\\s*>)`,
     'g'
   );
 
-  const generatedDecl = new RegExp(
-    `<color\\b(?=[^>]*\\bname\\s*=\\s*["']${resourceName}["'])[^>]*(?:\\/\\s*>|>[\\s\\S]*?<\\/color\\s*>)`,
-    'g'
-  );
+  const customPattern = makePattern();
+  const generatedPattern = makePattern();
 
-  if (!customDecl.test(customXml)) {
+  if (!customPattern.test(customXml)) {
+    return;
+  }
+
+  if (!generatedPattern.test(generatedXml)) {
     return;
   }
 
   const cleaned = generatedXml.replace(
-    generatedDecl,
+    makePattern(),
     ''
   );
 
-  if (cleaned !== generatedXml) {
-    fs.writeFileSync(
-      generatedFile,
-      cleaned,
-      'utf8'
-    );
+  fs.writeFileSync(generatedFile, cleaned, 'utf8');
 
-    info(
-      'Removed duplicate launcher background color. ' +
-      'Farnava custom color preserved.'
-    );
-  }
+  log('Duplicate launcher color removed.');
+  log('Farnava custom color preserved.');
 }
 
-/**
- * Verify minimum SDK declarations.
- */
-function collectMinSdkDeclarations(files) {
+/* =====================================
+   5. VERIFY MINIMUM SDK
+===================================== */
+
+function verifyMinSdk(files) {
   const declarations = [];
 
   const patterns = [
@@ -224,12 +199,11 @@ function collectMinSdkDeclarations(files) {
   ];
 
   for (const file of files) {
-    if (!isFile(file)) continue;
+    if (!isFile(file)) {
+      continue;
+    }
 
-    const content = fs.readFileSync(
-      file,
-      'utf8'
-    );
+    const content = fs.readFileSync(file, 'utf8');
 
     for (const pattern of patterns) {
       for (const match of content.matchAll(pattern)) {
@@ -241,14 +215,40 @@ function collectMinSdkDeclarations(files) {
     }
   }
 
-  return declarations;
+  if (declarations.length === 0) {
+    fail('No numeric minSdkVersion declaration found.');
+  }
+
+  const invalid = declarations.filter(
+    item => item.value < MIN_SDK
+  );
+
+  if (invalid.length > 0) {
+    for (const item of invalid) {
+      console.error(
+        `${path.relative(ROOT, item.file)}: ${item.value}`
+      );
+    }
+
+    fail('An Android minimum SDK below 24 remains.');
+  }
+
+  for (const item of declarations) {
+    log(
+      `Verified: ${path.relative(ROOT, item.file)} = ${item.value}`
+    );
+  }
 }
 
-/**
- * Main preparation process.
- */
+/* =====================================
+   6. MAIN PROCESS
+===================================== */
+
 function main() {
-  info(`Repository root: ${ROOT}`);
+  log('Starting Android preparation...');
+  log(`Project directory: ${ROOT}`);
+
+  // Validate project.
 
   if (!isFile(path.join(ROOT, 'package.json'))) {
     fail('package.json not found.');
@@ -270,8 +270,7 @@ function main() {
 
   if (!isFile(gradleGroovy) && !isFile(gradleKotlin)) {
     fail(
-      'Android Gradle project not found. ' +
-      'Run npx cap add android and npx cap sync android first.'
+      'Android project not found. Run npx cap add android first.'
     );
   }
 
@@ -279,102 +278,77 @@ function main() {
     fail('Android app source directory not found.');
   }
 
-  ensureDir(APP_RES);
+  ensureDirectory(APP_RES);
 
-  // Copy Farnava resources.
+  // Copy resources.
+
   if (fs.existsSync(CUSTOM_RES)) {
-    copyResourceTree(
-      CUSTOM_RES,
-      APP_RES
-    );
+    copyResources(CUSTOM_RES, APP_RES);
   } else {
-    info('Custom Android resources not found; skipping copy.');
+    log('No custom Android resources found.');
   }
 
-  // Update Gradle configurations.
+  // Update Gradle files.
+
   const gradleFiles = [
     path.join(ANDROID_DIR, 'variables.gradle'),
+    path.join(ANDROID_DIR, 'variables.gradle.kts'),
     gradleGroovy,
     gradleKotlin,
     path.join(ANDROID_DIR, 'build.gradle'),
     path.join(ANDROID_DIR, 'build.gradle.kts')
   ];
 
-  let gradleFileFound = false;
+  let gradleFound = false;
 
   for (const file of gradleFiles) {
     if (isFile(file)) {
-      gradleFileFound = true;
-      updateGradleMinSdk(file);
+      gradleFound = true;
+      updateMinSdk(file);
     }
   }
 
-  if (!gradleFileFound) {
+  if (!gradleFound) {
     fail('No Android Gradle configuration found.');
   }
 
-  // Update Android manifest if it declares minSdk.
+  // Update manifest if necessary.
+
   const manifest = path.join(
     APP_SRC_MAIN,
     'AndroidManifest.xml'
   );
 
-  updateManifestMinSdk(manifest);
+  updateManifest(manifest);
 
-  // Fix duplicate launcher background color.
-  removeDuplicateLauncherBackground(
+  // Remove duplicate launcher resource.
+
+  removeDuplicateLauncherColor(
     path.join(APP_RES, 'values')
   );
 
-  // Final verification.
-  const declarations = collectMinSdkDeclarations([
+  // Verify SDK configuration.
+
+  verifyMinSdk([
     ...gradleFiles,
     manifest
   ]);
 
-  if (declarations.length === 0) {
-    fail(
-      'Could not find minSdkVersion. ' +
-      'Check android/variables.gradle.'
-    );
-  }
-
-  const tooLow = declarations.filter(
-    item => item.value < 24
-  );
-
-  if (tooLow.length > 0) {
-    for (const item of tooLow) {
-      console.error(
-        ` - ${path.relative(ROOT, item.file)}: ` +
-        `minSdkVersion=${item.value}`
-      );
-    }
-
-    fail('At least one minSdkVersion is below 24.');
-  }
-
-  info(
-    'Verified minSdk declarations: ' +
-    declarations
-      .map(item =>
-        `${path.relative(ROOT, item.file)}=${item.value}`
-      )
-      .join(', ')
-  );
-
-  info('Android preparation completed successfully.');
+  log('Android preparation completed successfully.');
+  log('Minimum supported Android API: 24');
 }
 
-// Execute.
+/* =====================================
+   7. EXECUTION
+===================================== */
+
 try {
   main();
 } catch (error) {
-  console.error(
-    `[Farnava Android] ERROR: ${error?.message || error}`
-  );
+  console.error(`[Farnava] BUILD PREPARATION FAILED`);
+  console.error(error.message);
 
-  if (process.env.DEBUG === '1' && error?.stack) {
+  if (process.env.DEBUG === '1') {
     console.error(error.stack);
   }
 

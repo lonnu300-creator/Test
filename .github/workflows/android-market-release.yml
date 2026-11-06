@@ -60,8 +60,6 @@ jobs:
             "scripts/prepare-android.mjs"
             "scripts/configure-release-signing.mjs"
             "android-resources/res/values/farnava_colors.xml"
-            ".github/workflows/android-debug.yml"
-            ".github/workflows/android-market-release.yml"
           )
 
           for FILE in "${REQUIRED_FILES[@]}"; do

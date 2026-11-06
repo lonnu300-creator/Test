@@ -77,7 +77,7 @@ jobs:
           test -f package.json
           test -f capacitor.config.json
           test -f www/index.html
-          test -f www/js/config.js
+          test -f www/js/domain.js
 
           node -e "const p=require('./package.json'); if (!p.dependencies?.['@capacitor/android'] || !p.dependencies?.['@capacitor/core']) throw new Error('Capacitor Android/Core dependencies are missing');"
 

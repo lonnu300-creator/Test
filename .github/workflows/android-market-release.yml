@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -43,7 +43,7 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-      - name: Validate Farnava source tree
+      - name: Validate Farnava project files
         shell: bash
         run: |
           set -euo pipefail
@@ -60,16 +60,17 @@ jobs:
             "scripts/prepare-android.mjs"
             "scripts/configure-release-signing.mjs"
             "android-resources/res/values/farnava_colors.xml"
+            ".github/workflows/android-debug.yml"
+            ".github/workflows/android-market-release.yml"
           )
 
           for FILE in "${REQUIRED_FILES[@]}"; do
             if [[ ! -f "$FILE" ]]; then
-              echo "::error::Required file is missing: $FILE"
+              echo "::error::Required Farnava file is missing: $FILE"
               exit 1
             fi
             echo "OK: $FILE"
           done
-
 
       - name: Download Vazirmatn and Lalezar fonts
         shell: bash
@@ -104,7 +105,7 @@ jobs:
         shell: bash
         run: npm run check
 
-      - name: Build web application
+      - name: Build web application bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -122,7 +123,6 @@ jobs:
               find android -maxdepth 4 -type f -print || true
               exit 1
             fi
-
             npx cap add android
           fi
 
@@ -142,7 +142,6 @@ jobs:
           FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-
           for SECRET_NAME in \
             FARNAVA_KEYSTORE_BASE64 \
             FARNAVA_KEYSTORE_PASSWORD \
@@ -154,10 +153,9 @@ jobs:
               exit 1
             fi
           done
+          echo "All four signing secrets are present."
 
-          echo "All release signing secrets are present."
-
-      - name: Restore keystore and configure release signing
+      - name: Restore keystore and configure Gradle signing
         shell: bash
         env:
           FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
@@ -168,7 +166,6 @@ jobs:
           set -euo pipefail
 
           KEYSTORE_PATH="$RUNNER_TEMP/farnava-release.jks"
-
           printf '%s' "$FARNAVA_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           test -s "$KEYSTORE_PATH"
 
@@ -220,10 +217,8 @@ jobs:
 
           mkdir -p market-artifact
           cp "$APK" market-artifact/Farnava-1.0.0-market-release.apk
-
           sha256sum market-artifact/Farnava-1.0.0-market-release.apk \
             > market-artifact/SHA256SUMS.txt
-
           ls -lh market-artifact/
 
       - name: Upload signed Market APK

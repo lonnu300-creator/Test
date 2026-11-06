@@ -1,0 +1,183 @@
+name: Build Farnava Market Release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: farnava-market-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and verify signed Market APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            package.json \
+            capacitor.config.json \
+            scripts/smoke-test.mjs \
+            scripts/prepare-android.mjs \
+            scripts/configure-release-signing.mjs \
+            .github/workflows/android-market-release.yml \
+            www/index.html \
+            www/app.js \
+            www/js/domain.js \
+            android-resources/res/mipmap-hdpi/ic_launcher.png
+          do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required project file is missing: $file"
+              exit 1
+            fi
+          done
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Download SIL OFL Persian fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p www/fonts www/font-licenses
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf" \
+            -o www/fonts/vazirmatn-variable.ttf
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/Lalezar-Regular.ttf" \
+            -o www/fonts/lalezar-regular.ttf
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/OFL.txt" \
+            -o www/font-licenses/Vazirmatn-OFL.txt
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/OFL.txt" \
+            -o www/font-licenses/Lalezar-OFL.txt
+          test -s www/fonts/vazirmatn-variable.ttf
+          test -s www/fonts/lalezar-regular.ttf
+
+      - name: Install dependencies
+        shell: bash
+        run: npm install --no-audit --no-fund
+
+      - name: Run project smoke tests
+        run: npm run check
+
+      - name: Bundle application
+        run: npm run build
+
+      - name: Create and prepare Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d android/app ]]; then
+            npx cap add android
+          fi
+          npx cap sync android
+          node scripts/prepare-android.mjs
+          test -f android/app/build.gradle
+          test -f android/gradlew
+
+      - name: Check release signing secrets
+        shell: bash
+        env:
+          FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
+          FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
+          FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
+          FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for key in \
+            FARNAVA_KEYSTORE_BASE64 \
+            FARNAVA_KEYSTORE_PASSWORD \
+            FARNAVA_KEY_ALIAS \
+            FARNAVA_KEY_PASSWORD
+          do
+            if [[ -z "${!key:-}" ]]; then
+              echo "::error::Missing GitHub Actions secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Configure private release signing
+        shell: bash
+        env:
+          FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
+          FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
+          FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
+          FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$FARNAVA_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/farnava-release.jks"
+          test -s "$RUNNER_TEMP/farnava-release.jks"
+          keytool -list \
+            -keystore "$RUNNER_TEMP/farnava-release.jks" \
+            -storepass "$FARNAVA_KEYSTORE_PASSWORD" \
+            -alias "$FARNAVA_KEY_ALIAS" >/dev/null
+
+          {
+            echo "FARNAVA_KEYSTORE_PATH=$RUNNER_TEMP/farnava-release.jks"
+            echo "FARNAVA_KEYSTORE_PASSWORD=$FARNAVA_KEYSTORE_PASSWORD"
+            echo "FARNAVA_KEY_ALIAS=$FARNAVA_KEY_ALIAS"
+            echo "FARNAVA_KEY_PASSWORD=$FARNAVA_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+          node scripts/configure-release-signing.mjs
+
+      - name: Build signed release APK
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Verify signed APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          mkdir -p market-artifact
+          cp "$APK" market-artifact/Farnava-1.0.0-market-release.apk
+          sha256sum market-artifact/Farnava-1.0.0-market-release.apk | tee market-artifact/SHA256SUMS.txt
+          ls -lh market-artifact/
+
+      - name: Upload signed Market APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: farnava-market-release-v1.0.0
+          path: market-artifact/*
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,11 @@
+{
+  "appId": "ir.farnava.app",
+  "appName": "فرنوا",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

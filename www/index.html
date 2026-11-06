@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#102b43">
+  <meta name="description" content="فرنوا؛ مدیریت فاکتور، مانده حساب، هزینه و اشتراک‌گذاری اسناد">
+  <meta name="color-scheme" content="light">
+  <title>فرنوا | مدیریت فروش و فاکتور</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/app-icon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <img class="brand-logo" src="assets/farnava-logo.png" alt="نشان فرنوا">
+        <div>
+          <h1>فرنوا</h1>
+          <p>مدیریت فروش و فاکتور</p>
+        </div>
+      </div>
+      <button type="button" class="icon-btn add-top" id="quickAddBtn" aria-label="افزودن سریع" title="افزودن سریع">＋</button>
+    </header>
+
+    <main class="page-content">
+      <section class="view active" id="view-dashboard" data-view="dashboard">
+        <section class="hero-card">
+          <div class="hero-copy">
+            <span class="eyebrow">داشبورد کسب‌وکار</span>
+            <h2>حساب‌وکتابت همیشه روشن است.</h2>
+            <p>فروش، دریافتی‌ها و مانده فاکتورهای تسویه‌نشده را یک‌جا ببین.</p>
+          </div>
+          <div class="hero-actions">
+            <button type="button" class="primary-btn big-btn" id="newInvoiceHero">＋ فاکتور جدید</button>
+            <button type="button" class="secondary-btn big-btn" id="newExpenseHero">＋ ثبت هزینه</button>
+          </div>
+        </section>
+
+        <div class="stats-grid" id="statsGrid"></div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>روند فروش و هزینه</h3>
+              <p>برای دیدن جزئیات، روی هر ماه بزن.</p>
+            </div>
+            <span class="panel-icon">▥</span>
+          </div>
+          <div id="statsChart" class="chart-area" aria-label="نمودار فروش و هزینه"></div>
+          <div id="chartDetails" class="chart-details" aria-live="polite">
+            <span class="muted">یک ماه را از نمودار انتخاب کن.</span>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div><h3>مانده‌های باز</h3><p>فاکتورهایی که هنوز کامل تسویه نشده‌اند.</p></div>
+            <button type="button" class="text-action" id="showUnsettledBtn">مشاهده همه</button>
+          </div>
+          <div id="unsettledPreview" class="stack-list"></div>
+        </section>
+
+        <div class="two-panels">
+          <section class="panel">
+            <div class="panel-head"><h3>آخرین فاکتورها</h3></div>
+            <div id="recentInvoices" class="stack-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h3>آخرین هزینه‌ها</h3></div>
+            <div id="recentExpenses" class="stack-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-invoices" data-view="invoices">
+        <section class="panel">
+          <div class="panel-head">
+            <div><h3>فاکتورها</h3><p>مدیریت، پیش‌نمایش و اشتراک فایل فاکتور</p></div>
+            <button type="button" class="primary-btn" id="newInvoiceBtn">＋ فاکتور جدید</button>
+          </div>
+          <div class="toolbar">
+            <input class="text-input" id="invoiceSearch" placeholder="جستجو در شماره، مشتری یا کالا" aria-label="جستجوی فاکتور">
+            <select class="text-input" id="invoiceFilter" aria-label="فیلتر فاکتورها">
+              <option value="all">همه فاکتورها</option>
+              <option value="unsettled">تسویه‌نشده‌ها</option>
+              <option value="open">فاکتورهای باز</option>
+              <option value="closed">فاکتورهای بسته</option>
+            </select>
+          </div>
+          <div id="invoiceList" class="stack-list"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-expenses" data-view="expenses">
+        <section class="panel">
+          <div class="panel-head">
+            <div><h3>هزینه‌ها</h3><p>ثبت هزینه‌های جاری و بررسی سود</p></div>
+            <button type="button" class="primary-btn" id="newExpenseBtn">＋ هزینه جدید</button>
+          </div>
+          <div id="expenseList" class="stack-list"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-settings" data-view="settings">
+        <section class="panel">
+          <div class="panel-head"><div><h3>اطلاعات کسب‌وکار</h3><p>این اطلاعات روی فاکتور چاپ و ارسال می‌شوند.</p></div></div>
+          <form id="settingsForm" class="form-grid">
+            <label class="field"><span>نام کسب‌وکار</span><input class="text-input" name="businessName" placeholder="نام فروشگاه یا شرکت"></label>
+            <label class="field"><span>نام مدیر / فروشنده</span><input class="text-input" name="managerName" placeholder="نام مسئول"></label>
+            <label class="field"><span>شماره تماس</span><input class="text-input" name="phone" inputmode="tel" placeholder="شماره تماس"></label>
+            <label class="field"><span>شناسه / کد اقتصادی (اختیاری)</span><input class="text-input" name="businessCode" placeholder="شناسه کسب‌وکار"></label>
+            <label class="field"><span>آدرس</span><textarea class="text-input" name="address" rows="3" placeholder="آدرس کسب‌وکار"></textarea></label>
+            <label class="field"><span>فونت پیش‌فرض فاکتور</span>
+              <select class="text-input" name="defaultFont">
+                <option value="Vazirmatn">وزیرمتن (پیشنهادی)</option>
+                <option value="Abar">آبار</option>
+                <option value="Lalezar">لاله‌زار</option>
+                <option value="Anjoman">انجمن</option>
+              </select>
+            </label>
+            <div class="asset-upload-grid">
+              <div class="asset-upload-card">
+                <div class="asset-upload-head"><strong>لوگوی کسب‌وکار</strong><span>روی سربرگ فاکتور</span></div>
+                <div class="asset-preview" id="logoPreview"><span>هنوز لوگویی انتخاب نشده</span></div>
+                <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" class="file-input">
+                <label for="logoFile" class="secondary-btn file-label">انتخاب عکس لوگو</label>
+                <button type="button" class="text-action danger-text" id="removeLogoBtn">حذف لوگو</button>
+              </div>
+              <div class="asset-upload-card">
+                <div class="asset-upload-head"><strong>تصویر مهر</strong><span>پایین فاکتور</span></div>
+                <div class="asset-preview stamp-preview" id="stampPreview"><span>هنوز مهری انتخاب نشده</span></div>
+                <input type="file" id="stampFile" accept="image/png,image/jpeg,image/webp" class="file-input">
+                <label for="stampFile" class="secondary-btn file-label">انتخاب عکس مهر</label>
+                <button type="button" class="text-action danger-text" id="removeStampBtn">حذف مهر</button>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button type="submit" class="primary-btn big-btn">ذخیره اطلاعات کسب‌وکار</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><h3>تنظیمات برنامه</h3><p>صدا و حرکت‌های رابط کاربری</p></div></div>
+          <form id="appSettingsForm" class="form-grid">
+            <label class="toggle-field"><span>افکت صدای ملایم</span><input type="checkbox" name="soundEnabled"></label>
+            <label class="toggle-field"><span>انیمیشن رابط کاربری</span><input type="checkbox" name="animationsEnabled"></label>
+            <button type="submit" class="primary-btn">ذخیره تنظیمات</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><h3>بکاپ و بازیابی</h3><p>فایل بکاپ فقط روی دستگاه ساخته می‌شود؛ سروری وجود ندارد.</p></div></div>
+          <div class="backup-grid">
+            <button type="button" class="primary-btn big-btn" id="exportBackupBtn">اشتراک‌گذاری بکاپ</button>
+            <button type="button" class="secondary-btn big-btn" id="importBackupBtn">بازیابی از فایل</button>
+            <input type="file" id="backupFileInput" accept=".farnava,.json,application/json" hidden>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><h3>ابزارهای آزمایش</h3><p>برای بررسی نمودار و مانده فاکتور</p></div></div>
+          <div class="backup-grid">
+            <button type="button" class="secondary-btn" id="seedDemoBtn">ساخت داده نمونه</button>
+            <button type="button" class="danger-btn" id="resetDataBtn">پاک‌کردن اطلاعات</button>
+          </div>
+        </section>
+
+        <section class="panel about-panel">
+          <div class="about-brand">
+            <img src="assets/farnava-logo.png" alt="لوگوی فرنوا" class="about-logo">
+            <div>
+              <h3>فرنوا</h3>
+              <p>مدیریت فروش، فاکتور و حساب‌وکتاب</p>
+              <span class="version-label">نسخه ۱.۰.۰</span>
+            </div>
+          </div>
+          <button type="button" class="secondary-btn big-btn" id="privacyBtn">مشاهده سیاست حریم خصوصی</button>
+        </section>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="منوی اصلی">
+      <button type="button" class="nav-btn active" data-target="dashboard"><span class="nav-icon">⌂</span><span>خانه</span></button>
+      <button type="button" class="nav-btn" data-target="invoices"><span class="nav-icon">▤</span><span>فاکتورها</span></button>
+      <button type="button" class="nav-btn" data-target="expenses"><span class="nav-icon">◫</span><span>هزینه‌ها</span></button>
+      <button type="button" class="nav-btn" data-target="settings"><span class="nav-icon">⚙</span><span>تنظیمات</span></button>
+    </nav>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <section class="modal-sheet" id="modalSheet" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <header class="modal-header">
+        <div><span class="eyebrow" id="modalEyebrow">فرنوا</span><h3 id="modalTitle">عنوان</h3></div>
+        <button type="button" class="icon-btn close-modal-btn" id="closeModalBtn" aria-label="بستن پنجره">×</button>
+      </header>
+      <div class="modal-body" id="modalBody"></div>
+      <footer class="modal-footer" id="modalFooter"></footer>
+    </section>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+  <script type="module" src="app.bundle.js"></script>
+</body>
+</html>

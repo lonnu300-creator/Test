@@ -1,0 +1,109 @@
+name: Build Farnava Market Release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build signed release APK for store submission
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Download licensed Persian fonts
+        run: |
+          set -euo pipefail
+          mkdir -p www/fonts www/font-licenses
+          curl -fL --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf" -o www/fonts/vazirmatn-variable.ttf
+          curl -fL --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/Lalezar-Regular.ttf" -o www/fonts/lalezar-regular.ttf
+          curl -fL --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/OFL.txt" -o www/font-licenses/Vazirmatn-OFL.txt
+          curl -fL --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/OFL.txt" -o www/font-licenses/Lalezar-OFL.txt
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run project checks
+        run: npm run check
+
+      - name: Bundle application
+        run: npm run build
+
+      - name: Create or sync Android project
+        run: |
+          set -euo pipefail
+          if [[ ! -d android/app ]]; then
+            npx cap add android
+          fi
+          npx cap sync android
+          node scripts/prepare-android.mjs
+
+      - name: Configure release signing
+        env:
+          FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
+          FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
+          FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
+          FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for key in FARNAVA_KEYSTORE_BASE64 FARNAVA_KEYSTORE_PASSWORD FARNAVA_KEY_ALIAS FARNAVA_KEY_PASSWORD; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::GitHub Actions secret $key is missing."
+              exit 1
+            fi
+          done
+          echo "$FARNAVA_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/farnava-release.jks"
+          test -s "$RUNNER_TEMP/farnava-release.jks"
+          export FARNAVA_KEYSTORE_PATH="$RUNNER_TEMP/farnava-release.jks"
+          echo "FARNAVA_KEYSTORE_PATH=$FARNAVA_KEYSTORE_PATH" >> "$GITHUB_ENV"
+          echo "FARNAVA_KEYSTORE_PASSWORD=$FARNAVA_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "FARNAVA_KEY_ALIAS=$FARNAVA_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "FARNAVA_KEY_PASSWORD=$FARNAVA_KEY_PASSWORD" >> "$GITHUB_ENV"
+          node scripts/configure-release-signing.mjs
+
+      - name: Build signed release APK
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Verify release signature
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          ls -lh "$APK"
+
+      - name: Upload signed market APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: farnava-market-release-v1.0.0
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30

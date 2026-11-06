@@ -16,10 +16,10 @@ export function numberValue(value) {
 
 export function calculateInvoice(inv) {
   const items = Array.isArray(inv?.items) ? inv.items : [];
-  const subtotal = items.reduce((sum, item) => sum + numberValue(item.qty) * numberValue(item.price), 0);
+  const subtotal = items.reduce((sum, item) => sum + Math.max(0, numberValue(item.qty)) * Math.max(0, numberValue(item.price)), 0);
   const discount = Math.min(Math.max(0, numberValue(inv?.discount)), subtotal);
   const taxable = Math.max(0, subtotal - discount);
-  const tax = taxable * Math.max(0, numberValue(inv?.taxPercent)) / 100;
+  const tax = taxable * Math.min(100, Math.max(0, numberValue(inv?.taxPercent))) / 100;
   const total = Math.max(0, taxable + tax);
   const paid = Math.min(total, Math.max(0, numberValue(inv?.paidAmount ?? inv?.paid)));
   const remaining = Math.max(0, total - paid);

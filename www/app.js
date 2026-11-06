@@ -6,9 +6,6 @@ import {
   jalaliMonthKey,
   shiftJalaliMonth
 } from './js/domain.js';
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
-import JSZip from 'jszip';
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
@@ -69,6 +66,7 @@ import { Capacitor } from '@capacitor/core';
     chartDetails: $('#chartDetails'),
     unsettledPreview: $('#unsettledPreview'),
     modalBackdrop: $('#modalBackdrop'),
+    modalSheet: $('#modalSheet'),
     modalTitle: $('#modalTitle'),
     modalEyebrow: $('#modalEyebrow'),
     modalBody: $('#modalBody'),
@@ -139,10 +137,15 @@ import { Capacitor } from '@capacitor/core';
   function normalizeInvoice(inv) {
     return {
       ...inv,
+      id: String(inv.id || id()),
+      number: String(inv.number || '').slice(0, 100),
+      customerName: String(inv.customerName || '').slice(0, 300),
+      customerPhone: String(inv.customerPhone || '').slice(0, 100),
+      notes: String(inv.notes || '').slice(0, 5000),
       date: safeIsoDate(inv.date),
       dueDate: inv.dueDate ? safeIsoDate(inv.dueDate) : '',
       type: inv.type === 'purchase' ? 'purchase' : 'sale',
-      paidAmount: Number(inv.paidAmount ?? inv.paid ?? 0) || 0,
+      paidAmount: Math.max(0, numberValue(inv.paidAmount ?? inv.paid ?? 0)),
       isClosed: Boolean(inv.isClosed),
       paperSize: safePaperSize(inv.paperSize),
       template: safeTemplate(inv.template),
@@ -150,8 +153,8 @@ import { Capacitor } from '@capacitor/core';
       items: Array.isArray(inv.items) ? inv.items.filter(Boolean).map(item => ({
         ...item,
         title: String(item.title || '').slice(0, 300),
-        qty: numberValue(item.qty),
-        price: numberValue(item.price)
+        qty: Math.max(0, numberValue(item.qty)),
+        price: Math.max(0, numberValue(item.price))
       })) : []
     };
   }
@@ -166,11 +169,16 @@ import { Capacitor } from '@capacitor/core';
       notes: String(exp.notes || '').slice(0, 2000)
     };
   }
+  let persistedState = JSON.stringify(state);
   function saveState() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const snapshot = JSON.stringify(state);
+      localStorage.setItem(STORAGE_KEY, snapshot);
+      persistedState = snapshot;
       return true;
     } catch (error) {
+      state = JSON.parse(persistedState);
+      render();
       toast('فضای ذخیره‌سازی پر شده است. حجم عکس لوگو یا مهر را کمتر کن.', 'error');
       console.error(error);
       return false;
@@ -290,13 +298,19 @@ import { Capacitor } from '@capacitor/core';
     return `<article class="stat-card ${extra}"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div><div class="hint">${escapeHtml(hint)}</div></article>`;
   }
   function renderDashboard() {
-    const sales = state.invoices.filter(x => x.type === 'sale').reduce((s, x) => s + calculateInvoice(x).total, 0);
-    const received = state.invoices.filter(x => x.type === 'sale').reduce((s, x) => s + calculateInvoice(x).paid, 0);
-    const receivable = state.invoices.filter(x => x.type === 'sale').reduce((s, x) => s + calculateInvoice(x).remaining, 0);
-    const payable = state.invoices.filter(x => x.type === 'purchase').reduce((s, x) => s + calculateInvoice(x).remaining, 0);
+    let sales = 0, received = 0, receivable = 0, payable = 0, salesCount = 0;
+    for (const inv of state.invoices) {
+      const calc = calculateInvoice(inv);
+      if (inv.type === 'sale') {
+        salesCount++;
+        sales += calc.total;
+        received += calc.paid;
+        receivable += calc.remaining;
+      } else payable += calc.remaining;
+    }
     const expenses = state.expenses.reduce((s, x) => s + numberValue(x.amount), 0);
     els.statsGrid.innerHTML = [
-      statCard('فروش کل', money(sales), `${state.invoices.filter(x => x.type === 'sale').length} فاکتور فروش`),
+      statCard('فروش کل', money(sales), `${salesCount} فاکتور فروش`),
       statCard('دریافتی از مشتریان', money(received), 'مبالغ ثبت‌شده به‌عنوان پرداخت', 'emphasis'),
       statCard('مانده طلب از مشتریان', money(receivable), 'فاکتورهای فروش تسویه‌نشده', receivable ? 'warning' : 'emphasis'),
       statCard('مانده بدهی خرید', money(payable), 'فاکتورهای خرید تسویه‌نشده'),
@@ -392,29 +406,34 @@ import { Capacitor } from '@capacitor/core';
   function monthlyData() {
     const now = new Date();
     const current = toJalaali(now.getFullYear(), now.getMonth() + 1, now.getDate());
-    const rows = [];
+    const byMonth = new Map();
     for (let offset = -5; offset <= 0; offset++) {
       const { jy, jm } = shiftJalaliMonth(current.jy, current.jm, offset);
       const key = `${jy}-${String(jm).padStart(2, '0')}`;
-      const invoices = state.invoices.filter(inv => jalaliMonthKey(inv.date) === key);
-      const salesInvoices = invoices.filter(inv => inv.type === 'sale');
-      const purchaseInvoices = invoices.filter(inv => inv.type === 'purchase');
-      const sales = salesInvoices.reduce((sum, inv) => sum + calculateInvoice(inv).total, 0);
-      const purchases = purchaseInvoices.reduce((sum, inv) => sum + calculateInvoice(inv).total, 0);
-      const received = salesInvoices.reduce((sum, inv) => sum + calculateInvoice(inv).paid, 0);
-      const outstanding = salesInvoices.reduce((sum, inv) => sum + calculateInvoice(inv).remaining, 0);
-      const expenses = state.expenses
-        .filter(exp => jalaliMonthKey(exp.date) === key)
-        .reduce((sum, exp) => sum + numberValue(exp.amount), 0);
-      rows.push({
+      byMonth.set(key, {
         key,
         label: `${MONTHS_FA[jm - 1]} ${new Intl.NumberFormat('fa-IR').format(jy)}`,
-        sales, purchases, received, outstanding, expenses,
-        invoiceCount: invoices.length,
+        sales: 0, purchases: 0, received: 0, outstanding: 0, expenses: 0,
+        invoiceCount: 0,
         monthDays: jalaaliMonthLength(jy, jm)
       });
     }
-    return rows;
+    for (const inv of state.invoices) {
+      const row = byMonth.get(jalaliMonthKey(inv.date));
+      if (!row) continue;
+      const calc = calculateInvoice(inv);
+      row.invoiceCount++;
+      if (inv.type === 'sale') {
+        row.sales += calc.total;
+        row.received += calc.paid;
+        row.outstanding += calc.remaining;
+      } else row.purchases += calc.total;
+    }
+    for (const exp of state.expenses) {
+      const row = byMonth.get(jalaliMonthKey(exp.date));
+      if (row) row.expenses += numberValue(exp.amount);
+    }
+    return [...byMonth.values()];
   }
   function drawChart() {
     if (!els.statsChart) return;
@@ -603,12 +622,13 @@ import { Capacitor } from '@capacitor/core';
       qty: numberValue(formValue(row, 'qty')),
       price: numberValue(formValue(row, 'price'))
     }));
-    const subtotal = items.reduce((s, x) => s + x.qty * x.price, 0);
-    const discount = Math.min(subtotal, numberValue(formValue(form, 'discount')));
-    const tax = Math.max(0, subtotal - discount) * numberValue(formValue(form, 'taxPercent')) / 100;
-    const total = Math.max(0, subtotal - discount + tax);
-    const paid = Math.min(total, numberValue(formValue(form, 'paidAmount')));
-    summary.innerHTML = `<div><span>جمع اقلام</span><strong>${money(subtotal)}</strong></div><div><span>مبلغ نهایی</span><strong>${money(total)}</strong></div><div><span>پرداخت‌شده</span><strong>${money(paid)}</strong></div><div><span>مانده تسویه</span><strong class="remaining">${money(Math.max(0, total - paid))}</strong></div>`;
+    const { subtotal, total, paid, remaining } = calculateInvoice({
+      items,
+      discount: formValue(form, 'discount'),
+      taxPercent: formValue(form, 'taxPercent'),
+      paidAmount: formValue(form, 'paidAmount')
+    });
+    summary.innerHTML = `<div><span>جمع اقلام</span><strong>${money(subtotal)}</strong></div><div><span>مبلغ نهایی</span><strong>${money(total)}</strong></div><div><span>پرداخت‌شده</span><strong>${money(paid)}</strong></div><div><span>مانده تسویه</span><strong class="remaining">${money(remaining)}</strong></div>`;
   }
   function openInvoiceForm(existingId = null) {
     const invoice = existingId ? state.invoices.find(x => x.id === existingId) : null;
@@ -798,6 +818,7 @@ import { Capacitor } from '@capacitor/core';
   }
 
   async function captureInvoice(inv, options) {
+    const { default: html2canvas } = await import('html2canvas');
     const holder = document.createElement('div');
     const renderWidth = options.size === 'A5' ? 559 : options.size === '80mm' ? 302 : 794;
     holder.style.cssText = `position:fixed;left:-10000px;top:0;z-index:-1;width:${renderWidth}px;background:#fff;pointer-events:none;`;
@@ -808,8 +829,9 @@ import { Capacitor } from '@capacitor/core';
       const images = Array.from(holder.querySelectorAll('img'));
       await Promise.all(images.map(img => img.complete ? Promise.resolve() : new Promise(resolve => { img.onload = resolve; img.onerror = resolve; })));
       const page = $('#invoicePreviewPage', holder);
+      const scale = Math.min(2, Math.sqrt(16_000_000 / Math.max(1, renderWidth * page.scrollHeight)));
       const canvas = await html2canvas(page, {
-        scale: 2,
+        scale,
         backgroundColor: '#ffffff',
         useCORS: true,
         logging: false,
@@ -822,10 +844,11 @@ import { Capacitor } from '@capacitor/core';
     }
   }
   async function createPdfBlob(canvas, size) {
+    const { jsPDF } = await import('jspdf');
     let format = size === 'A5' ? 'a5' : 'a4';
     if (size === '80mm') {
       const heightMm = Math.max(100, canvas.height / canvas.width * 80 + 10);
-      format = [80, heightMm];
+      format = [80, Math.min(250, heightMm)];
     }
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format, compress: true });
     const pageWidth = pdf.internal.pageSize.getWidth();
@@ -850,6 +873,7 @@ import { Capacitor } from '@capacitor/core';
     return pdf.output('blob');
   }
   async function createDocxBlob(inv, options) {
+    const { default: JSZip } = await import('jszip');
     const calc = calculateInvoice(inv);
     const font = safeFont(options.font || 'Vazirmatn');
     const template = safeTemplate(options.template || inv.template);
@@ -932,24 +956,20 @@ import { Capacitor } from '@capacitor/core';
     window.setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
   async function shareBlob(blob, filename, mime, title) {
-    const file = new File([blob], filename, { type: mime });
     if (Capacitor.isNativePlatform()) {
-      try {
-        const base64 = await blobToBase64(blob);
-        const path = `farnava-share/${Date.now()}-${filename}`;
-        await Filesystem.writeFile({ path, data: base64, directory: Directory.Cache, recursive: true });
-        const fileUri = await Filesystem.getUri({ path, directory: Directory.Cache });
-        await Share.share({
-          title,
-          text: `فایل ${title} از فرنوا`,
-          files: [fileUri.uri],
-          dialogTitle: 'اشتراک‌گذاری فاکتور'
-        });
-        return;
-      } catch (nativeError) {
-        console.warn('Native file share failed; trying Web Share', nativeError);
-      }
+      const base64 = await blobToBase64(blob);
+      const path = `farnava-share/${Date.now()}-${filename}`;
+      await Filesystem.writeFile({ path, data: base64, directory: Directory.Cache, recursive: true });
+      const fileUri = await Filesystem.getUri({ path, directory: Directory.Cache });
+      await Share.share({
+        title,
+        text: `فایل ${title} از فرنوا`,
+        files: [fileUri.uri],
+        dialogTitle: 'اشتراک‌گذاری فاکتور'
+      });
+      return;
     }
+    const file = new File([blob], filename, { type: mime });
     if (navigator.share && navigator.canShare?.({ files: [file] })) {
       await navigator.share({ title, text: `فایل ${title} از فرنوا`, files: [file] });
       return;
@@ -1030,12 +1050,18 @@ import { Capacitor } from '@capacitor/core';
       .catch(error => toast(`اشتراک بکاپ ناموفق بود: ${error.message}`, 'error'));
   }
   function importBackup(file) {
+    if (file.size > 8 * 1024 * 1024) {
+      toast('فایل بکاپ بیش از ۸ مگابایت است.', 'error');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {
         const parsed = JSON.parse(reader.result);
         const data = parsed.data || parsed;
-        if (!data || !Array.isArray(data.invoices) || !Array.isArray(data.expenses)) throw new Error('invalid');
+        if (!data || !Array.isArray(data.invoices) || !Array.isArray(data.expenses) ||
+          !data.invoices.every(x => x && typeof x === 'object' && !Array.isArray(x) && Array.isArray(x.items)) ||
+          !data.expenses.every(x => x && typeof x === 'object' && !Array.isArray(x))) throw new Error('invalid');
         if (!confirm('اطلاعات فعلی با اطلاعات بکاپ جایگزین شود؟')) return;
         state = {
           ...defaultState(), ...data,
@@ -1049,11 +1075,13 @@ import { Capacitor } from '@capacitor/core';
           invoices: data.invoices.filter(Boolean).map(normalizeInvoice),
           expenses: data.expenses.filter(Boolean).map(normalizeExpense)
         };
-        saveState(); render(); toast('بازیابی بکاپ با موفقیت انجام شد.'); beep();
+        if (!saveState()) return;
+        render(); toast('بازیابی بکاپ با موفقیت انجام شد.'); beep();
       } catch (error) {
         toast('فایل بکاپ معتبر نیست یا قابل خواندن نیست.', 'error');
       }
     };
+    reader.onerror = () => toast('خواندن فایل بکاپ ناموفق بود.', 'error');
     reader.readAsText(file, 'utf-8');
   }
 
@@ -1068,7 +1096,7 @@ import { Capacitor } from '@capacitor/core';
       items: [{ id: id(), title: 'طراحی و اجرای خدمات', qty: 1, price: 2500000 }, { id: id(), title: 'پشتیبانی ماهانه', qty: 2, price: 500000 }]
     };
     const second = {
-      id: id(), number: `FN-${String(state.invoices.length + 2).padStart(5, '0')}`, type: 'purchase', date: today, dueDate: '',
+      id: id(), number: `FN-${String(Number(first.number.slice(3)) + 1).padStart(5, '0')}`, type: 'purchase', date: today, dueDate: '',
       customerName: 'تأمین‌کننده نمونه', customerPhone: '',
       discount: 0, taxPercent: 0, paidAmount: 200000, notes: '',
       paperSize: 'A5', template: 'classic', fontFamily: 'Abar', isClosed: false,
@@ -1083,7 +1111,8 @@ import { Capacitor } from '@capacitor/core';
   }
   function resetAll() {
     if (!confirm('تمام فاکتورها، هزینه‌ها و اطلاعات کسب‌وکار حذف شوند؟ این کار برگشت‌پذیر نیست.')) return;
-    state = defaultState(); saveState(); render(); toast('اطلاعات پاک شد.'); beep();
+    state = defaultState(); if (!saveState()) return;
+    render(); toast('اطلاعات پاک شد.'); beep();
   }
 
   function openPrivacyPolicy() {

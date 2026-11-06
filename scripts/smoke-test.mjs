@@ -50,6 +50,8 @@ for (const file of [
   'www/app.js',
   'www/js/domain.js',
   'scripts/prepare-android.mjs',
+  'scripts/build.mjs',
+  'scripts/ui-test.mjs',
   'scripts/configure-release-signing.mjs'
 ]) {
   const syntax = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
@@ -78,5 +80,11 @@ assert.equal(calc.total, 2640, 'Invoice tax/discount calculation failed');
 assert.equal(calc.paid, 1000, 'Invoice paid amount failed');
 assert.equal(calc.remaining, 1640, 'Unsettled balance calculation failed');
 assert.equal(calc.paymentStatus, 'partial', 'Partial payment status failed');
+const invalidAmounts = calculateInvoice({ items: [{ qty: -2, price: 500 }], taxPercent: 200 });
+assert.equal(invalidAmounts.total, 0, 'Negative line items must not reduce invoice totals');
+assert.ok(fs.existsSync('package-lock.json'), 'Deterministic npm install requires a lockfile');
+for (const font of ['vazirmatn-variable.ttf', 'lalezar-regular.ttf']) {
+  assert.ok(fs.existsSync(`www/fonts/${font}`), `Required font is missing: ${font}`);
+}
 
 console.log('Farnava 1.0.0 release candidate smoke tests passed.');

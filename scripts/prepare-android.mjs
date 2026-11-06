@@ -23,7 +23,6 @@ const APP_RES = path.join(APP_SRC_MAIN, 'res');
 const CUSTOM_RES = path.join(ROOT, 'android-resources', 'res');
 
 const MIN_SDK = 24;
-const APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
 
 function log(message) {
   console.log(`[Farnava] ${message}`);
@@ -106,17 +105,6 @@ function updateMinSdk(file) {
   }
 
   return false;
-}
-
-function updateVersionName(file) {
-  if (!isFile(file)) return;
-  const original = fs.readFileSync(file, 'utf8');
-  if (!/^\s*versionName\s+["'][^"']+["']/m.test(original)) {
-    fail('Could not find Android versionName in app/build.gradle.');
-  }
-  const updated = original.replace(/(^\s*versionName\s+["'])[^"']+(["'])/m, (_match, prefix, suffix) =>
-    `${prefix}${APP_VERSION}${suffix}`);
-  if (updated !== original) fs.writeFileSync(file, updated, 'utf8');
 }
 
 /* =====================================
@@ -319,8 +307,6 @@ function main() {
       updateMinSdk(file);
     }
   }
-
-  if (isFile(gradleGroovy)) updateVersionName(gradleGroovy);
 
   if (!gradleFound) {
     fail('No Android Gradle configuration found.');

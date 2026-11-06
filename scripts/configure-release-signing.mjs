@@ -1,78 +1,154 @@
+/**
+ * Farnava Release Signing Configuration
+ * Version: 2.0.0
+ *
+ * Configures the Android Gradle Release build to use the private
+ * Farnava keystore supplied through GitHub Actions secrets.
+ *
+ * Required environment variables:
+ * FARNAVA_KEYSTORE_PATH
+ * FARNAVA_KEYSTORE_PASSWORD
+ * FARNAVA_KEY_ALIAS
+ * FARNAVA_KEY_PASSWORD
+ *
+ * This file never prints passwords or private key material.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 
-const gradlePath = path.join(process.cwd(), 'android', 'app', 'build.gradle');
-const required = [
+const ROOT = process.cwd();
+const ANDROID_APP_DIR = path.join(ROOT, 'android', 'app');
+const GRADLE_FILE = path.join(ANDROID_APP_DIR, 'build.gradle');
+
+const REQUIRED_ENV = [
   'FARNAVA_KEYSTORE_PATH',
   'FARNAVA_KEYSTORE_PASSWORD',
   'FARNAVA_KEY_ALIAS',
   'FARNAVA_KEY_PASSWORD'
 ];
-for (const key of required) {
-  if (!process.env[key]) {
-    console.error(`Missing required environment variable: ${key}`);
-    process.exit(1);
+
+const BEGIN_MARKER = '// BEGIN FARNAVA MANAGED RELEASE SIGNING';
+const END_MARKER = '// END FARNAVA MANAGED RELEASE SIGNING';
+
+function fail(message) {
+  console.error(`[Farnava Signing] ERROR: ${message}`);
+  process.exit(1);
+}
+
+function log(message) {
+  console.log(`[Farnava Signing] ${message}`);
+}
+
+function validateEnvironment() {
+  for (const name of REQUIRED_ENV) {
+    if (!process.env[name] || !process.env[name].trim()) {
+      fail(`Required environment variable is missing: ${name}`);
+    }
   }
-}
-if (!fs.existsSync(process.env.FARNAVA_KEYSTORE_PATH)) {
-  console.error('Release keystore file was not found.');
-  process.exit(1);
-}
-if (!fs.existsSync(gradlePath)) {
-  console.error('android/app/build.gradle was not found.');
-  process.exit(1);
+
+  const keystorePath = path.resolve(process.env.FARNAVA_KEYSTORE_PATH);
+
+  if (!fs.existsSync(keystorePath) || !fs.statSync(keystorePath).isFile()) {
+    fail('The configured Farnava release keystore file does not exist.');
+  }
+
+  process.env.FARNAVA_KEYSTORE_PATH = keystorePath;
 }
 
-let gradle = fs.readFileSync(gradlePath, 'utf8');
-
-if (!gradle.includes('signingConfigs {')) {
-  const signingBlock = `
+function createManagedGradleBlock() {
+  return `${BEGIN_MARKER}
+android {
     signingConfigs {
         release {
-            storeFile file(System.getenv("FARNAVA_KEYSTORE_PATH"))
+            storeFile rootProject.file(System.getenv("FARNAVA_KEYSTORE_PATH"))
             storePassword System.getenv("FARNAVA_KEYSTORE_PASSWORD")
             keyAlias System.getenv("FARNAVA_KEY_ALIAS")
             keyPassword System.getenv("FARNAVA_KEY_PASSWORD")
         }
     }
 
-`;
-  const buildTypesIndex = gradle.indexOf('buildTypes {');
-  if (buildTypesIndex < 0) {
-    console.error('Could not find buildTypes block in app/build.gradle.');
-    process.exit(1);
-  }
-  gradle = gradle.slice(0, buildTypesIndex) + signingBlock + gradle.slice(buildTypesIndex);
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
+}
+${END_MARKER}`;
 }
 
-const buildTypesIndex = gradle.indexOf('buildTypes {');
-const releaseIndex = gradle.indexOf('release {', buildTypesIndex);
-if (buildTypesIndex < 0 || releaseIndex < 0) {
-  console.error('Could not find buildTypes.release block in app/build.gradle.');
-  process.exit(1);
+function removePreviousManagedBlock(source) {
+  const start = source.indexOf(BEGIN_MARKER);
+  const end = source.indexOf(END_MARKER);
+
+  if (start === -1 && end === -1) {
+    return source;
+  }
+
+  if (start === -1 || end === -1 || end < start) {
+    fail('The previous managed signing block is incomplete. Repair the Gradle file before continuing.');
+  }
+
+  const afterEnd = end + END_MARKER.length;
+  return `${source.slice(0, start)}${source.slice(afterEnd)}`.trimEnd();
 }
-const openBrace = gradle.indexOf('{', releaseIndex);
-let depth = 0;
-let closeBrace = -1;
-for (let i = openBrace; i < gradle.length; i++) {
-  if (gradle[i] === '{') depth++;
-  else if (gradle[i] === '}') {
-    depth--;
-    if (depth === 0) {
-      closeBrace = i;
-      break;
+
+function configureGradle() {
+  if (!fs.existsSync(GRADLE_FILE)) {
+    fail('android/app/build.gradle was not found. The Capacitor Android project must be generated and synced first.');
+  }
+
+  let source = fs.readFileSync(GRADLE_FILE, 'utf8');
+
+  if (!/\bandroid\s*\{/.test(source)) {
+    fail('The Android Gradle extension block was not found in app/build.gradle.');
+  }
+
+  source = removePreviousManagedBlock(source);
+
+  const managedBlock = createManagedGradleBlock();
+  const updated = `${source.trimEnd()}\n\n${managedBlock}\n`;
+
+  // Verify the exact block that will be appended.
+  if (!updated.includes(`${BEGIN_MARKER}\nandroid {`)) {
+    fail('Could not create the managed Release signing block.');
+  }
+
+  if (!/signingConfig\s+signingConfigs\.release/.test(managedBlock)) {
+    fail('Release build is not explicitly assigned to signingConfigs.release.');
+  }
+
+  if (/signingConfig\s+signingConfigs\.debug/.test(managedBlock)) {
+    fail('Debug signing must never be assigned by the Farnava Release workflow.');
+  }
+
+  fs.writeFileSync(GRADLE_FILE, updated, 'utf8');
+
+  const saved = fs.readFileSync(GRADLE_FILE, 'utf8');
+  const begin = saved.indexOf(BEGIN_MARKER);
+  const end = saved.indexOf(END_MARKER);
+
+  if (begin < 0 || end < begin) {
+    fail('The managed signing block could not be verified after writing.');
+  }
+
+  const savedBlock = saved.slice(begin, end + END_MARKER.length);
+
+  for (const required of [
+    'storeFile rootProject.file(System.getenv("FARNAVA_KEYSTORE_PATH"))',
+    'storePassword System.getenv("FARNAVA_KEYSTORE_PASSWORD")',
+    'keyAlias System.getenv("FARNAVA_KEY_ALIAS")',
+    'keyPassword System.getenv("FARNAVA_KEY_PASSWORD")',
+    'signingConfig signingConfigs.release'
+  ]) {
+    if (!savedBlock.includes(required)) {
+      fail(`Release signing verification failed: missing ${required}`);
     }
   }
-}
-if (closeBrace < 0) {
-  console.error('Could not parse buildTypes.release block.');
-  process.exit(1);
-}
-const releaseBlock = gradle.slice(releaseIndex, closeBrace + 1);
-if (!releaseBlock.includes('signingConfig')) {
-  const insertAt = openBrace + 1;
-  gradle = gradle.slice(0, insertAt) + '\n            signingConfig signingConfigs.release' + gradle.slice(insertAt);
+
+  log('Gradle Release signing block has been installed and verified.');
+  log('The Release build is explicitly assigned to the Farnava release keystore.');
 }
 
-fs.writeFileSync(gradlePath, gradle);
-console.log('Release APK signing configuration is ready.');
+validateEnvironment();
+configureGradle();

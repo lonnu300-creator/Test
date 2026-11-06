@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and sign Farnava 1.0.0
+    name: Build and verify Farnava signed Release APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -24,7 +24,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -35,7 +34,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -61,8 +60,6 @@ jobs:
             "scripts/prepare-android.mjs"
             "scripts/configure-release-signing.mjs"
             "android-resources/res/values/farnava_colors.xml"
-            ".github/workflows/android-debug.yml"
-            ".github/workflows/android-market-release.yml"
           )
 
           for FILE in "${REQUIRED_FILES[@]}"; do
@@ -73,23 +70,52 @@ jobs:
             echo "OK: $FILE"
           done
 
+      - name: Download licensed Persian fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p www/fonts www/font-licenses
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf" \
+            -o www/fonts/vazirmatn-variable.ttf
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/Lalezar-Regular.ttf" \
+            -o www/fonts/lalezar-regular.ttf
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/OFL.txt" \
+            -o www/font-licenses/Vazirmatn-OFL.txt
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/OFL.txt" \
+            -o www/font-licenses/Lalezar-OFL.txt
+
+          test -s www/fonts/vazirmatn-variable.ttf
+          test -s www/fonts/lalezar-regular.ttf
+
       - name: Install JavaScript dependencies
         shell: bash
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
-      - name: Run Farnava automated checks
+      - name: Check JavaScript syntax and Farnava features
         shell: bash
-        run: npm run check
+        run: |
+          set -euo pipefail
+          node --check scripts/prepare-android.mjs
+          node --check scripts/configure-release-signing.mjs
+          node --check scripts/smoke-test.mjs
+          npm run check
 
-      - name: Build web application bundle
+      - name: Build web application
         shell: bash
         run: |
           set -euo pipefail
           npm run build
           test -s www/app.bundle.js
-          npm run check:ui
 
-      - name: Create or sync native Android project
+      - name: Create or sync Capacitor Android project
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +132,50 @@ jobs:
           npx cap sync android
           node scripts/prepare-android.mjs
 
-      - name: Check release signing secrets
+          test -f android/app/build.gradle
+          test -f android/gradlew
+          test -f android/app/src/main/AndroidManifest.xml
+
+      - name: Verify Android minimum SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f android/variables.gradle ]]; then
+            grep -nE 'minSdkVersion[[:space:]]*=[[:space:]]*24' android/variables.gradle
+          fi
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const files = [
+            'android/variables.gradle',
+            'android/app/build.gradle',
+            'android/app/src/main/AndroidManifest.xml'
+          ];
+
+          const contents = files
+            .filter(fs.existsSync)
+            .map(file => fs.readFileSync(file, 'utf8'))
+            .join('\n');
+
+          const values = [
+            ...contents.matchAll(
+              /(?:\bminSdkVersion\s*=\s*|\bminSdkVersion\s+|android:minSdkVersion\s*=\s*["'])(\d+)/g
+            )
+          ].map(match => Number(match[1]));
+
+          if (values.length === 0) {
+            throw new Error('No numeric minSdkVersion declaration was found.');
+          }
+
+          if (values.some(value => value < 24)) {
+            throw new Error(`minSdkVersion below 24 remains: ${values.join(', ')}`);
+          }
+
+          console.log(`Verified Android minSdkVersion values: ${values.join(', ')}`);
+          NODE
+
+      - name: Check required release secrets
         shell: bash
         env:
           FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
@@ -115,6 +184,7 @@ jobs:
           FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
           for SECRET_NAME in \
             FARNAVA_KEYSTORE_BASE64 \
             FARNAVA_KEYSTORE_PASSWORD \
@@ -122,61 +192,82 @@ jobs:
             FARNAVA_KEY_PASSWORD
           do
             if [[ -z "${!SECRET_NAME:-}" ]]; then
-              echo "::error::Missing repository secret: ${SECRET_NAME}"
+              echo "::error::Missing GitHub repository secret: ${SECRET_NAME}"
               exit 1
             fi
           done
-          echo "All four signing secrets are present."
 
-      - name: Restore keystore and configure Gradle signing
+          echo "All required Farnava Release signing secrets are present."
+
+      - name: Restore and validate Farnava release keystore
         shell: bash
         env:
           FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
           FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
           FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
-          FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           KEYSTORE_PATH="$RUNNER_TEMP/farnava-release.jks"
-          printf '%s' "$FARNAVA_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+
+          printf '%s' "$FARNAVA_KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE_PATH"
+
           test -s "$KEYSTORE_PATH"
 
-          keytool -list \
+          KEY_INFO="$RUNNER_TEMP/farnava-keystore-info.txt"
+
+          keytool -list -v \
             -keystore "$KEYSTORE_PATH" \
             -storepass "$FARNAVA_KEYSTORE_PASSWORD" \
-            -alias "$FARNAVA_KEY_ALIAS" >/dev/null
+            -alias "$FARNAVA_KEY_ALIAS" \
+            > "$KEY_INFO"
 
-          export FARNAVA_KEYSTORE_PATH="$KEYSTORE_PATH"
+          grep -q "PrivateKeyEntry" "$KEY_INFO"
 
-          {
-            echo "FARNAVA_KEYSTORE_PATH=$KEYSTORE_PATH"
-          } >> "$GITHUB_ENV"
+          echo "FARNAVA_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
 
-          node scripts/configure-release-signing.mjs
+          echo "Farnava private release key was restored and validated."
 
-      - name: Build signed Release APK
+      - name: Configure Gradle Release signing
+        shell: bash
         env:
+          FARNAVA_KEYSTORE_PATH: ${{ runner.temp }}/farnava-release.jks
           FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
           FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
           FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          node scripts/configure-release-signing.mjs
+
+      - name: Build signed Release APK
         working-directory: android
         shell: bash
+        env:
+          FARNAVA_KEYSTORE_PATH: ${{ runner.temp }}/farnava-release.jks
+          FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
+          FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
+          FARNAVA_KEY_PASSWORD: ${{ secrets.FARNAVA_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          ./gradlew --no-daemon --stacktrace clean assembleRelease
 
-      - name: Verify APK package and signature
+      - name: Verify package, alignment and exact Release certificate
         shell: bash
+        env:
+          FARNAVA_KEYSTORE_PATH: ${{ runner.temp }}/farnava-release.jks
+          FARNAVA_KEYSTORE_PASSWORD: ${{ secrets.FARNAVA_KEYSTORE_PASSWORD }}
+          FARNAVA_KEY_ALIAS: ${{ secrets.FARNAVA_KEY_ALIAS }}
         run: |
           set -euo pipefail
 
           APK="android/app/build/outputs/apk/release/app-release.apk"
           BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          CERT_FILE="$RUNNER_TEMP/farnava-release-cert.der"
 
           if [[ ! -s "$APK" ]]; then
-            echo "::error::Release APK was not generated."
+            echo "::error::Expected Release APK was not generated."
             find android/app/build/outputs -type f -name "*.apk" -print || true
             exit 1
           fi
@@ -186,16 +277,55 @@ jobs:
 
           "$BUILD_TOOLS/zipalign" -c -v 4 "$APK"
 
-          "$BUILD_TOOLS/apksigner" verify \
-            --verbose --print-certs "$APK"
+          keytool -exportcert \
+            -keystore "$FARNAVA_KEYSTORE_PATH" \
+            -storepass "$FARNAVA_KEYSTORE_PASSWORD" \
+            -alias "$FARNAVA_KEY_ALIAS" \
+            -file "$CERT_FILE"
+
+          EXPECTED_CERT_SHA256="$(
+            sha256sum "$CERT_FILE" | awk '{print tolower($1)}'
+          )"
+
+          SIGNATURE_REPORT="$(
+            "$BUILD_TOOLS/apksigner" verify \
+              --verbose --print-certs "$APK"
+          )"
+
+          printf '%s\n' "$SIGNATURE_REPORT"
+
+          ACTUAL_CERT_SHA256="$(
+            printf '%s\n' "$SIGNATURE_REPORT" \
+              | sed -nE 's/.*certificate SHA-256 digest: ([0-9a-fA-F:]+).*/\1/p' \
+              | head -n 1 \
+              | tr -d ':' \
+              | tr '[:upper:]' '[:lower:]'
+          )"
+
+          if [[ -z "$ACTUAL_CERT_SHA256" ]]; then
+            echo "::error::Could not read the APK signing certificate SHA-256."
+            exit 1
+          fi
+
+          if [[ "$ACTUAL_CERT_SHA256" != "$EXPECTED_CERT_SHA256" ]]; then
+            echo "::error::APK certificate does not match the Farnava release keystore."
+            echo "Expected SHA-256: $EXPECTED_CERT_SHA256"
+            echo "Actual SHA-256:   $ACTUAL_CERT_SHA256"
+            exit 1
+          fi
+
+          echo "SUCCESS: APK is signed with the exact Farnava release certificate."
 
           mkdir -p market-artifact
           cp "$APK" market-artifact/Farnava-1.0.0-market-release.apk
-          sha256sum market-artifact/Farnava-1.0.0-market-release.apk \
+
+          sha256sum \
+            market-artifact/Farnava-1.0.0-market-release.apk \
             > market-artifact/SHA256SUMS.txt
+
           ls -lh market-artifact/
 
-      - name: Upload signed Market APK
+      - name: Upload signed Cafe Bazaar APK
         uses: actions/upload-artifact@v4
         with:
           name: farnava-market-release-v1.0.0

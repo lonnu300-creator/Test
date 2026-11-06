@@ -1,4 +1,4 @@
-name: Build Farnava Market Release APK
+name: Build Farnava Market Release APK - Clean
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build signed Farnava APK
+    name: Build, sign and verify Farnava APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -20,7 +20,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -34,147 +34,100 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK platforms and build tools
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-35" \
             "platforms;android-36" \
-            "build-tools;35.0.0" \
             "build-tools;36.0.0"
 
-      - name: Locate Farnava project
-        id: project
+      - name: Validate Farnava repository files
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_DIR=""
+          echo "Repository root:"
+          pwd
+          echo "Top-level files:"
+          ls -la
 
-          if [[ -f "package.json" && -f "capacitor.config.json" ]]; then
-            PROJECT_DIR="."
-          else
-            while IFS= read -r -d '' CONFIG_FILE; do
-              CANDIDATE="$(dirname "$CONFIG_FILE")"
-              if [[ -f "$CANDIDATE/package.json" ]]; then
-                PROJECT_DIR="$CANDIDATE"
-                break
-              fi
-            done < <(
-              find . -mindepth 2 -maxdepth 5 \
-                -type f -name "capacitor.config.json" -print0
-            )
-          fi
+          REQUIRED_FILES=(
+            "package.json"
+            "capacitor.config.json"
+            "www/index.html"
+            "www/app.js"
+            "www/js/domain.js"
+            "www/styles.css"
+            "scripts/smoke-test.mjs"
+            "scripts/prepare-android.mjs"
+            "android-resources/res/values/farnava_colors.xml"
+            ".github/workflows/android-debug.yml"
+            ".github/workflows/android-market-release.yml"
+          )
 
-          if [[ -z "$PROJECT_DIR" ]]; then
-            echo "::error::Could not find a folder containing both package.json and capacitor.config.json."
-            echo "Repository root contents:"
-            ls -la
-            echo "Capacitor config files:"
-            find . -maxdepth 5 -type f -name "capacitor.config.*" -print
-            exit 1
-          fi
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [[ ! -f "$FILE" ]]; then
+              echo "::error::Required Farnava file is missing: $FILE"
+              exit 1
+            fi
+            echo "OK: $FILE"
+          done
 
-          echo "Farnava project directory: $PROJECT_DIR"
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Install Node dependencies
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Download Vazirmatn and Lalezar fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p www/fonts www/font-licenses
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/Vazirmatn%5Bwght%5D.ttf" \
+            -o www/fonts/vazirmatn-variable.ttf
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/Lalezar-Regular.ttf" \
+            -o www/fonts/lalezar-regular.ttf
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/vazirmatn/OFL.txt" \
+            -o www/font-licenses/Vazirmatn-OFL.txt
+
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/google/fonts/main/ofl/lalezar/OFL.txt" \
+            -o www/font-licenses/Lalezar-OFL.txt
+
+          test -s www/fonts/vazirmatn-variable.ttf
+          test -s www/fonts/lalezar-regular.ttf
+
+      - name: Install JavaScript dependencies
         shell: bash
         run: |
           set -euo pipefail
           npm install --no-audit --no-fund
 
-      - name: Validate project and Capacitor configuration
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Run Farnava project checks
         shell: bash
         run: |
           set -euo pipefail
+          npm run check
 
-          test -f package.json
-          test -f capacitor.config.json
-
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const allDeps = {
-            ...(pkg.dependencies || {}),
-            ...(pkg.devDependencies || {})
-          };
-
-          const required = [
-            '@capacitor/core',
-            '@capacitor/android',
-            '@capacitor/cli'
-          ];
-
-          const missing = required.filter(name => !allDeps[name]);
-
-          if (missing.length) {
-            console.error('Missing Capacitor dependencies:', missing.join(', '));
-            process.exit(1);
-          }
-
-          const config = JSON.parse(
-            fs.readFileSync('capacitor.config.json', 'utf8')
-          );
-
-          if (!config.appId || !config.appName) {
-            console.error('capacitor.config.json must define appId and appName.');
-            process.exit(1);
-          }
-
-          const webDir = config.webDir || 'www';
-
-          console.log('App name:', config.appName);
-          console.log('App ID:', config.appId);
-          console.log('Web directory:', webDir);
-          console.log('Capacitor dependencies: OK');
-
-          fs.writeFileSync(
-            process.env.GITHUB_ENV,
-            `FARNAVA_WEB_DIR=${webDir}\n`,
-            { flag: 'a' }
-          );
-          NODE
-
-      - name: Build web application if a build script exists
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Build web application bundle
         shell: bash
         run: |
           set -euo pipefail
-          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
-            npm run build
-          else
-            echo "No build script found; using the existing web files."
-          fi
+          npm run build
+          test -s www/app.bundle.js
 
-      - name: Verify web entry point
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! -f "$FARNAVA_WEB_DIR/index.html" ]]; then
-            echo "::error::Web entry point not found: $FARNAVA_WEB_DIR/index.html"
-            echo "Available HTML files:"
-            find . -maxdepth 5 -type f -name "index.html" -not -path "*/node_modules/*" -print
-            exit 1
-          fi
-          echo "Web entry point found: $FARNAVA_WEB_DIR/index.html"
-
-      - name: Prepare Android project
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Create or sync Capacitor Android project
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ ! -f "android/app/build.gradle" ]]; then
             if [[ -d "android" ]]; then
-              echo "::error::An android folder exists, but android/app/build.gradle is missing."
+              echo "::error::The android folder exists, but android/app/build.gradle is missing."
               find android -maxdepth 4 -type f -print || true
               exit 1
             fi
@@ -183,15 +136,13 @@ jobs:
           fi
 
           npx cap sync android
+          node scripts/prepare-android.mjs
 
-          if [[ ! -f "android/app/build.gradle" ]]; then
-            echo "::error::Capacitor did not create android/app/build.gradle."
-            exit 1
-          fi
+          test -f android/app/build.gradle
+          test -f android/gradlew
+          test -f android/app/src/main/AndroidManifest.xml
 
-          chmod +x android/gradlew
-
-      - name: Check release signing secrets
+      - name: Check required signing secrets
         shell: bash
         env:
           FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
@@ -208,13 +159,14 @@ jobs:
             FARNAVA_KEY_PASSWORD
           do
             if [[ -z "${!SECRET_NAME:-}" ]]; then
-              echo "::error::Missing repository secret: $SECRET_NAME"
+              echo "::error::Missing GitHub Actions secret: ${SECRET_NAME}"
               exit 1
             fi
           done
 
-      - name: Restore signing key and configure Gradle
-        working-directory: ${{ steps.project.outputs.dir }}
+          echo "All four signing secrets are present."
+
+      - name: Restore keystore and configure Gradle signing
         shell: bash
         env:
           FARNAVA_KEYSTORE_BASE64: ${{ secrets.FARNAVA_KEYSTORE_BASE64 }}
@@ -260,34 +212,37 @@ jobs:
           }
           GRADLE
 
-          if ! grep -q "farnava-signing.gradle" android/app/build.gradle; then
+          if ! grep -Fq "farnava-signing.gradle" android/app/build.gradle; then
             printf "\napply from: 'farnava-signing.gradle'\n" >> android/app/build.gradle
           fi
 
+          echo "Release signing configuration prepared."
+
       - name: Build signed Release APK
-        working-directory: ${{ steps.project.outputs.dir }}/android
+        working-directory: android
         shell: bash
         run: |
           set -euo pipefail
+          chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace assembleRelease
 
-      - name: Verify and package APK
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Verify APK package, alignment and signature
         shell: bash
         run: |
           set -euo pipefail
 
           APK="android/app/build/outputs/apk/release/app-release.apk"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
 
           if [[ ! -s "$APK" ]]; then
-            echo "::error::Release APK was not found at the expected path."
-            echo "Available APK files:"
-            find android/app/build/outputs -type f -name "*.apk" -print 2>/dev/null || true
+            echo "::error::Release APK was not generated."
+            find android/app/build/outputs -type f -name "*.apk" -print || true
             exit 1
           fi
 
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
-            verify --verbose --print-certs "$APK"
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | grep -F "name='ir.farnava.app'"
+          "$BUILD_TOOLS/zipalign" -c -v 4 "$APK"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
 
           mkdir -p market-artifact
           cp "$APK" market-artifact/Farnava-market-release.apk
@@ -301,7 +256,7 @@ jobs:
         with:
           name: farnava-market-release-apk
           path: |
-            ${{ steps.project.outputs.dir }}/market-artifact/Farnava-market-release.apk
-            ${{ steps.project.outputs.dir }}/market-artifact/SHA256SUMS.txt
+            market-artifact/Farnava-market-release.apk
+            market-artifact/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
